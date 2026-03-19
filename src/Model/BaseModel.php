@@ -59,4 +59,38 @@ abstract class BaseModel
 
         return $data;
     }
+
+    /**
+     * 将模型转为关联数组（包含所有字段，供数据库操作使用）
+     *
+     * 与 toArray() 的区别：不排除 hidden 字段。
+     * toArray() 用于 API 输出（排除 password 等），toDbArray() 用于数据库写入。
+     *
+     * @return array<string, mixed>
+     */
+    public function toDbArray(): array
+    {
+        $reflection = new \ReflectionClass($this);
+        $data = [];
+
+        foreach ($reflection->getProperties() as $prop) {
+            $columnAttrs = $prop->getAttributes(Column::class);
+            if ($columnAttrs === []) {
+                continue;
+            }
+
+            if ($prop->isInitialized($this)) {
+                $value = $prop->getValue($this);
+                if ($value instanceof \BackedEnum) {
+                    $value = $value->value;
+                }
+                if ($value instanceof \DateTimeInterface) {
+                    $value = $value->format('Y-m-d H:i:s');
+                }
+                $data[$prop->getName()] = $value;
+            }
+        }
+
+        return $data;
+    }
 }

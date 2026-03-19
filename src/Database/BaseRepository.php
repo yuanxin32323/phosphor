@@ -80,7 +80,7 @@ abstract class BaseRepository
     public function save(BaseModel $model): void
     {
         $primaryKey = $this->getPrimaryKeyColumn();
-        $data = $model->toArray();
+        $data = $model->toDbArray();
 
         // 处理自动时间戳
         $now = date('Y-m-d H:i:s');
@@ -127,6 +127,8 @@ abstract class BaseRepository
                     $column = $columnAttrs[0]->newInstance();
                     if ($column->autoCreate && !isset($data[$prop->getName()])) {
                         $data[$prop->getName()] = $now;
+                        // 回写到模型内存中，避免后续访问未初始化属性
+                        $prop->setValue($model, new \DateTimeImmutable($now));
                     }
                 }
             }
