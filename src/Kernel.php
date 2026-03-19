@@ -21,6 +21,8 @@ use Phosphor\Routing\RouteMatch;
 use Phosphor\Validation\Validator;
 use Phosphor\DTO\InputDTO;
 use Phosphor\Event\EventDispatcher;
+use Phosphor\Navigation\ProjectMapWriter;
+use Phosphor\Navigation\ChangelogWriter;
 use ReflectionMethod;
 use ReflectionNamedType;
 use Throwable;
@@ -72,15 +74,25 @@ class Kernel
             return new Connection($dbConfig, $basePath);
         });
 
-        // 初始化错误索引写入器
+        // 初始化 AI 导航系统
         $aiDir = $basePath . '/.ai';
+        if (!is_dir($aiDir)) {
+            mkdir($aiDir, 0755, true);
+        }
+
         $this->container->instance(
             ErrorIndexWriter::class,
             new ErrorIndexWriter($aiDir . '/ERROR_INDEX.md')
         );
 
+        $changelogWriter = new ChangelogWriter($aiDir . '/CHANGELOG.md');
+        $this->container->instance(ChangelogWriter::class, $changelogWriter);
+
         // 注册所有应用的路由
         $this->registerApps();
+
+        // 自动生成项目地图
+        $this->generateProjectMap($basePath, $aiDir);
     }
 
     /**
@@ -143,6 +155,14 @@ class Kernel
     }
 
     /**
+     * 获取变更日志写入器
+     */
+    public function getChangelogWriter(): ChangelogWriter
+    {
+        return $this->container->make(ChangelogWriter::class);
+    }
+
+    /**
      * 注册所有应用的控制器到路由
      */
     private function registerApps(): void
@@ -151,6 +171,23 @@ class Kernel
             foreach ($appDef->controllers as $controllerClass) {
                 $this->router->registerController($controllerClass, $appDef->prefix);
             }
+        }
+    }
+
+    /**
+     * 自动生成项目地图
+     */
+    private function generateProjectMap(string $basePath, string $aiDir): void
+    {
+        try {
+            $mapWriter = new ProjectMapWriter(
+                $aiDir . '/PROJECT_MAP.md',
+                $basePath,
+                $this->router,
+            );
+            $mapWriter->generate();
+        } catch (Throwable) {
+            // 项目地图生成失败不影响主流程
         }
     }
 
