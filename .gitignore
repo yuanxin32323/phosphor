@@ -1,4 +1,4 @@
 /vendor/
-/storage/logs/*.log
-.env
+composer.lock
 .phpunit.result.cache
+.env
