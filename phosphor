@@ -8,8 +8,9 @@
  *
  * 命令:
  *   php phosphor map         → 重新生成 .ai/PROJECT_MAP.md
- *   php phosphor changelog   → 追加变更记录（交互式）
+ *   php phosphor changelog   → 追加变更记录
  *   php phosphor status      → 显示项目状态摘要
+ *   php phosphor mode        → 查看/切换工作模式
  */
 
 require_once __DIR__ . '/vendor/autoload.php';
@@ -20,13 +21,13 @@ use Phosphor\Navigation\ChangelogWriter;
 
 $basePath = __DIR__;
 
-// 解析命令
 $command = $argv[1] ?? 'help';
 
 match ($command) {
     'map' => runMap($basePath),
     'changelog' => runChangelog($basePath, array_slice($argv, 2)),
     'status' => runStatus($basePath),
+    'mode' => runMode($basePath, $argv[2] ?? null),
     default => runHelp(),
 };
 
@@ -48,7 +49,6 @@ function runMap(string $basePath): void
 
     echo "✅ 已更新: .ai/PROJECT_MAP.md\n";
 
-    // 显示摘要
     $routes = $kernel->getRouter()->getRegisteredRoutes();
     echo "   路由: " . count($routes) . " 条\n";
 
@@ -69,7 +69,6 @@ function runChangelog(string $basePath, array $args): void
     $aiDir = $basePath . '/.ai';
     $writer = new ChangelogWriter($aiDir . '/CHANGELOG.md');
 
-    // 用法: php phosphor changelog <TYPE> <MESSAGE> [file1 file2 ...]
     if (count($args) < 2) {
         echo "用法: php phosphor changelog <TYPE> <MESSAGE> [文件列表...]\n";
         echo "类型: NEW / MODIFY / DELETE / FIX\n";
@@ -85,10 +84,62 @@ function runChangelog(string $basePath, array $args): void
     echo "✅ 变更已记录: [{$type}] {$message}\n";
 }
 
+function runMode(string $basePath, ?string $newMode): void
+{
+    $modeFile = $basePath . '/.ai/MODE';
+    $currentMode = file_exists($modeFile) ? trim(file_get_contents($modeFile)) : 'business';
+
+    if ($newMode === null) {
+        // 查看当前模式
+        echo "📋 当前工作模式: {$currentMode}\n\n";
+
+        if ($currentMode === 'framework') {
+            echo "   🔧 框架开发模式\n";
+            echo "   可修改: src/、.ai/rules/、tests/\n";
+            echo "   职责: 修改框架核心代码、更新架构文档\n";
+        } else {
+            echo "   💼 业务开发模式\n";
+            echo "   可修改: apps/、shared/、config/\n";
+            echo "   禁止: 不可修改 src/（框架核心）\n";
+        }
+
+        echo "\n   切换: php phosphor mode <framework|business>\n";
+        return;
+    }
+
+    // 切换模式
+    $validModes = ['framework', 'business'];
+    if (!in_array($newMode, $validModes, true)) {
+        echo "❌ 无效模式: {$newMode}\n";
+        echo "   可选: framework / business\n";
+        return;
+    }
+
+    if ($newMode === $currentMode) {
+        echo "ℹ️  已经是 {$currentMode} 模式\n";
+        return;
+    }
+
+    file_put_contents($modeFile, $newMode . "\n");
+    echo "✅ 模式已切换: {$currentMode} → {$newMode}\n\n";
+
+    if ($newMode === 'framework') {
+        echo "   ⚠️  框架开发模式 — AI 可以修改 src/ 框架核心代码\n";
+    } else {
+        echo "   ✅ 业务开发模式 — AI 只能修改 apps/、shared/、config/\n";
+        echo "   📌 src/ 目录已锁定，框架核心代码不可被 AI 修改\n";
+    }
+}
+
 function runStatus(string $basePath): void
 {
+    $modeFile = $basePath . '/.ai/MODE';
+    $mode = file_exists($modeFile) ? trim(file_get_contents($modeFile)) : 'business';
+    $modeEmoji = $mode === 'framework' ? '🔧' : '💼';
+
     echo "📊 Phosphor 项目状态\n";
     echo str_repeat('─', 40) . "\n";
+    echo "   模式: {$modeEmoji} {$mode}\n";
 
     // PHP 文件数
     $phpCount = 0;
@@ -102,12 +153,14 @@ function runStatus(string $basePath): void
 
     // AI 导航文件状态
     $aiFiles = [
+        'MODE' => '.ai/MODE',
+        'AGENTS.md' => '.ai/AGENTS.md',
         'PROJECT_MAP.md' => '.ai/PROJECT_MAP.md',
         'CHANGELOG.md' => '.ai/CHANGELOG.md',
         'ERROR_INDEX.md' => '.ai/ERROR_INDEX.md',
-        'ARCHITECTURE.md' => '.ai/ARCHITECTURE.md',
-        'CONVENTIONS.md' => '.ai/CONVENTIONS.md',
-        'PATTERNS.md' => '.ai/PATTERNS.md',
+        'ARCHITECTURE.md' => '.ai/rules/ARCHITECTURE.md',
+        'CONVENTIONS.md' => '.ai/rules/CONVENTIONS.md',
+        'PATTERNS.md' => '.ai/rules/PATTERNS.md',
     ];
 
     echo "\n   AI 导航文件:\n";
@@ -116,18 +169,21 @@ function runStatus(string $basePath): void
         if (file_exists($fullPath)) {
             $mtime = date('Y-m-d H:i', filemtime($fullPath));
             $size = filesize($fullPath);
-            echo "   ✅ {$name} ({$size} bytes, 更新于 {$mtime})\n";
+            echo "   ✅ {$name} ({$size} bytes, {$mtime})\n";
         } else {
-            echo "   ⬜ {$name} (未生成)\n";
+            echo "   ⬜ {$name}\n";
         }
     }
 
     // 日志状态
-    $logFile = $basePath . '/storage/logs/app.log';
-    if (file_exists($logFile)) {
-        $logSize = filesize($logFile);
-        $logLines = count(file($logFile));
-        echo "\n   日志: {$logLines} 条记录 (" . round($logSize / 1024, 1) . " KB)\n";
+    echo "\n   日志:\n";
+    foreach (['app.log', 'debug.log'] as $logName) {
+        $logFile = $basePath . '/storage/logs/' . $logName;
+        if (file_exists($logFile)) {
+            $logSize = filesize($logFile);
+            $logLines = count(file($logFile));
+            echo "   📄 {$logName}: {$logLines} 条 (" . round($logSize / 1024, 1) . " KB)\n";
+        }
     }
 }
 
@@ -137,14 +193,15 @@ function runHelp(): void
     🔥 Phosphor CLI - AI 导航工具
 
     命令:
-      php phosphor map            重新生成 .ai/PROJECT_MAP.md
-      php phosphor changelog      追加变更记录到 .ai/CHANGELOG.md
-      php phosphor status         显示项目状态摘要
+      php phosphor map            生成 .ai/PROJECT_MAP.md
+      php phosphor changelog      记录变更到 .ai/CHANGELOG.md
+      php phosphor status         项目状态摘要
+      php phosphor mode           查看/切换工作模式
 
-    AI 工作流:
-      1. AI 开始工作前运行 `php phosphor map` 了解项目
-      2. AI 修改代码后运行 `php phosphor changelog` 记录变更
-      3. AI 调试时先查看 .ai/ERROR_INDEX.md（自动更新）
+    模式切换:
+      php phosphor mode              查看当前模式
+      php phosphor mode framework    切换到框架开发模式
+      php phosphor mode business     切换到业务开发模式
 
     HELP;
 }
