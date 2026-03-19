@@ -7,19 +7,29 @@ use Phosphor\Http\Request;
 /**
  * 智能日志记录器
  *
- * 核心设计：每条日志是一行 JSON，包含精准的文件定位信息，
- * 让 AI 能直接从日志跳转到出错的代码位置，无需遍历项目。
+ * 分层日志设计，为 AI 调试优化：
  *
- * 日志格式：JSON Lines（每行一个 JSON 对象）
+ * | 文件               | 内容           | AI 查看优先级 |
+ * |--------------------|---------------|--------------|
+ * | .ai/ERROR_INDEX.md | 异常摘要       | 🔴 第一 |
+ * | storage/logs/debug.log | 业务调试日志 | 🟡 第二 |
+ * | storage/logs/app.log   | 全量请求日志 | 🟢 兜底 |
+ *
+ * debug.log 只保留最近 100 条，小而精，AI 一眼看完。
+ * app.log 是全量日志，适合追踪完整请求链路。
  */
 class Logger
 {
     private string $logFile;
+    private string $debugFile;
+    private int $debugMaxEntries;
     private ?Request $request = null;
 
-    public function __construct(string $logFile)
+    public function __construct(string $logFile, int $debugMaxEntries = 100)
     {
         $this->logFile = $logFile;
+        $this->debugFile = dirname($logFile) . '/debug.log';
+        $this->debugMaxEntries = $debugMaxEntries;
     }
 
     /**
@@ -30,39 +40,134 @@ class Logger
         $this->request = $request;
     }
 
+    /**
+     * 业务调试日志 — 写入 debug.log（AI 优先查看）
+     *
+     * 使用场景：业务代码中需要输出调试信息时调用此方法。
+     * debug.log 只保留最近 N 条，AI 调试时先看这里。
+     *
+     * ```php
+     * $this->logger->debug('用户创建请求', ['input' => $input]);
+     * $this->logger->debug('查询结果', ['count' => count($users)]);
+     * ```
+     */
     public function debug(string $message, array $context = []): void
     {
-        $this->log(LogLevel::DEBUG, $message, $context);
+        $entry = $this->buildEntry(LogLevel::DEBUG, $message, $context);
+        $json = $this->encodeEntry($entry);
+
+        // 写入 app.log（全量）
+        file_put_contents($this->logFile, $json . "\n", FILE_APPEND | LOCK_EX);
+
+        // 同时写入 debug.log（限量，AI 优先查看）
+        $this->appendToDebugLog($json);
     }
 
     public function info(string $message, array $context = []): void
     {
-        $this->log(LogLevel::INFO, $message, $context);
+        $this->writeToAppLog(LogLevel::INFO, $message, $context);
     }
 
     public function warn(string $message, array $context = []): void
     {
-        $this->log(LogLevel::WARN, $message, $context);
+        $this->writeToAppLog(LogLevel::WARN, $message, $context);
     }
 
+    /**
+     * 错误日志 — 写入 app.log + debug.log
+     *
+     * 错误也写入 debug.log，因为 AI 调试时需要看到错误上下文。
+     */
     public function error(string $message, array $context = []): void
     {
-        $this->log(LogLevel::ERROR, $message, $context);
+        $entry = $this->buildEntry(LogLevel::ERROR, $message, $context);
+        $json = $this->encodeEntry($entry);
+        file_put_contents($this->logFile, $json . "\n", FILE_APPEND | LOCK_EX);
+        $this->appendToDebugLog($json);
     }
 
     public function fatal(string $message, array $context = []): void
     {
-        $this->log(LogLevel::FATAL, $message, $context);
+        $entry = $this->buildEntry(LogLevel::FATAL, $message, $context);
+        $json = $this->encodeEntry($entry);
+        file_put_contents($this->logFile, $json . "\n", FILE_APPEND | LOCK_EX);
+        $this->appendToDebugLog($json);
     }
 
     /**
-     * 写入一条结构化日志
+     * 通用日志方法（只写 app.log）
      *
      * @param array<string, mixed> $context
      */
     public function log(LogLevel $level, string $message, array $context = []): void
     {
-        // 自动获取调用位置
+        // debug/error/fatal 有独立方法处理双通道写入
+        if ($level === LogLevel::DEBUG) {
+            $this->debug($message, $context);
+            return;
+        }
+        if ($level === LogLevel::ERROR) {
+            $this->error($message, $context);
+            return;
+        }
+        if ($level === LogLevel::FATAL) {
+            $this->fatal($message, $context);
+            return;
+        }
+        $this->writeToAppLog($level, $message, $context);
+    }
+
+    /**
+     * 获取 debug.log 文件路径（供 AI 导航指引使用）
+     */
+    public function getDebugLogPath(): string
+    {
+        return $this->debugFile;
+    }
+
+    // ─── 内部方法 ─────────────────────────────────────
+
+    /**
+     * 只写入 app.log
+     */
+    private function writeToAppLog(LogLevel $level, string $message, array $context): void
+    {
+        $entry = $this->buildEntry($level, $message, $context);
+        $json = $this->encodeEntry($entry);
+        file_put_contents($this->logFile, $json . "\n", FILE_APPEND | LOCK_EX);
+    }
+
+    /**
+     * 追加到 debug.log，保持最新 N 条
+     */
+    private function appendToDebugLog(string $jsonLine): void
+    {
+        $lines = [];
+        if (file_exists($this->debugFile)) {
+            $content = file_get_contents($this->debugFile);
+            if ($content !== false && $content !== '') {
+                $lines = explode("\n", trim($content));
+            }
+        }
+
+        $lines[] = $jsonLine;
+
+        // 只保留最新的 N 条
+        if (count($lines) > $this->debugMaxEntries) {
+            $lines = array_slice($lines, -$this->debugMaxEntries);
+        }
+
+        file_put_contents($this->debugFile, implode("\n", $lines) . "\n", LOCK_EX);
+    }
+
+    /**
+     * 构建日志条目
+     *
+     * @param array<string, mixed> $context
+     * @return array<string, mixed>
+     */
+    private function buildEntry(LogLevel $level, string $message, array $context): array
+    {
         $caller = $this->getCaller();
 
         $entry = [
@@ -89,15 +194,50 @@ class Logger
         }
 
         // 合并额外上下文
-        if ($context !== []) {
-            foreach ($context as $key => $value) {
-                $entry[$key] = $value;
-            }
+        foreach ($context as $key => $value) {
+            $entry[$key] = $this->serializeValue($value);
         }
 
-        // 写入 JSON Lines
-        $json = json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        file_put_contents($this->logFile, $json . "\n", FILE_APPEND | LOCK_EX);
+        return $entry;
+    }
+
+    /**
+     * 序列化上下文值，确保可 JSON 编码
+     */
+    private function serializeValue(mixed $value): mixed
+    {
+        if (is_scalar($value) || $value === null) {
+            return $value;
+        }
+        if (is_array($value)) {
+            return array_map(fn(mixed $v): mixed => $this->serializeValue($v), $value);
+        }
+        if ($value instanceof \BackedEnum) {
+            return $value->value;
+        }
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('c');
+        }
+        if ($value instanceof \JsonSerializable) {
+            return $value->jsonSerialize();
+        }
+        if (is_object($value)) {
+            // 对象转为类名 + 公开属性
+            $data = ['__class' => get_class($value)];
+            foreach ((array) $value as $k => $v) {
+                // 跳过私有/受保护属性的内部键名
+                if (!str_contains($k, "\0")) {
+                    $data[$k] = $this->serializeValue($v);
+                }
+            }
+            return $data;
+        }
+        return (string) $value;
+    }
+
+    private function encodeEntry(array $entry): string
+    {
+        return json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
     }
 
     /**
@@ -107,9 +247,8 @@ class Logger
      */
     private function getCaller(): ?array
     {
-        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 5);
+        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 6);
 
-        // 跳过 Logger 自身的帧
         foreach ($trace as $frame) {
             $class = $frame['class'] ?? '';
             if ($class === self::class) {
@@ -162,9 +301,7 @@ class Logger
      */
     private function toRelativePath(string $absolutePath): string
     {
-        // 尝试找到项目根目录（包含 composer.json 的目录）
         $dir = dirname($this->logFile);
-        // storage/logs/ → 项目根目录上两级
         $basePath = dirname($dir, 2);
         if (str_starts_with($absolutePath, $basePath)) {
             return substr($absolutePath, strlen($basePath) + 1);

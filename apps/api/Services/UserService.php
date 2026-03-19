@@ -40,6 +40,11 @@ class UserService
 
     public function createUser(CreateUserInput $input): User
     {
+        $this->logger->debug('开始创建用户', [
+            'name' => $input->name,
+            'email' => $input->email,
+        ]);
+
         $user = new User();
         $user->name = $input->name;
         $user->email = $input->email;
@@ -48,8 +53,9 @@ class UserService
 
         $this->userRepository->save($user);
 
-        $this->logger->info("User created: {$user->name}", [
+        $this->logger->debug('用户创建成功', [
             'user_id' => $user->id,
+            'status' => $user->status,
         ]);
 
         return $user;
