@@ -1,0 +1,171 @@
+#!/usr/bin/env php
+<?php declare(strict_types=1);
+
+/**
+ * Phosphor CLI 工具
+ *
+ * AI 专用命令行工具。用于更新 AI 导航文件，不在 HTTP 请求中执行。
+ *
+ * 命令:
+ *   php phosphor map         → 重新生成 .ai/PROJECT_MAP.md
+ *   php phosphor changelog   → 追加变更记录（交互式）
+ *   php phosphor status      → 显示项目状态摘要
+ */
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+use Phosphor\Kernel;
+use Phosphor\Navigation\ProjectMapWriter;
+use Phosphor\Navigation\ChangelogWriter;
+
+$basePath = __DIR__;
+
+// 解析命令
+$command = $argv[1] ?? 'help';
+
+match ($command) {
+    'map' => runMap($basePath),
+    'changelog' => runChangelog($basePath, array_slice($argv, 2)),
+    'status' => runStatus($basePath),
+    default => runHelp(),
+};
+
+// ─── 命令实现 ────────────────────────────────────────────
+
+function runMap(string $basePath): void
+{
+    echo "🗺️  正在生成项目地图...\n";
+
+    $kernel = new Kernel($basePath);
+    $aiDir = $basePath . '/.ai';
+
+    $writer = new ProjectMapWriter(
+        $aiDir . '/PROJECT_MAP.md',
+        $basePath,
+        $kernel->getRouter(),
+    );
+    $writer->generate();
+
+    echo "✅ 已更新: .ai/PROJECT_MAP.md\n";
+
+    // 显示摘要
+    $routes = $kernel->getRouter()->getRegisteredRoutes();
+    echo "   路由: " . count($routes) . " 条\n";
+
+    $apps = [];
+    $appsDir = $basePath . '/apps';
+    if (is_dir($appsDir)) {
+        foreach (scandir($appsDir) as $entry) {
+            if ($entry !== '.' && $entry !== '..' && is_dir($appsDir . '/' . $entry)) {
+                $apps[] = $entry;
+            }
+        }
+    }
+    echo "   应用: " . implode(', ', $apps) . "\n";
+}
+
+function runChangelog(string $basePath, array $args): void
+{
+    $aiDir = $basePath . '/.ai';
+    $writer = new ChangelogWriter($aiDir . '/CHANGELOG.md');
+
+    // 用法: php phosphor changelog <TYPE> <MESSAGE> [file1 file2 ...]
+    if (count($args) < 2) {
+        echo "用法: php phosphor changelog <TYPE> <MESSAGE> [文件列表...]\n";
+        echo "类型: NEW / MODIFY / DELETE / FIX\n";
+        echo "示例: php phosphor changelog NEW '添加用户模块' apps/api/Controllers/UserController.php\n";
+        return;
+    }
+
+    $type = $args[0];
+    $message = $args[1];
+    $files = array_slice($args, 2);
+
+    $writer->append($type, $message, $files);
+    echo "✅ 变更已记录: [{$type}] {$message}\n";
+}
+
+function runStatus(string $basePath): void
+{
+    echo "📊 Phosphor 项目状态\n";
+    echo str_repeat('─', 40) . "\n";
+
+    // PHP 文件数
+    $phpCount = 0;
+    foreach (['src', 'shared', 'apps'] as $dir) {
+        $fullDir = $basePath . '/' . $dir;
+        if (is_dir($fullDir)) {
+            $phpCount += countFiles($fullDir, '.php');
+        }
+    }
+    echo "   PHP 文件: {$phpCount}\n";
+
+    // AI 导航文件状态
+    $aiFiles = [
+        'PROJECT_MAP.md' => '.ai/PROJECT_MAP.md',
+        'CHANGELOG.md' => '.ai/CHANGELOG.md',
+        'ERROR_INDEX.md' => '.ai/ERROR_INDEX.md',
+        'ARCHITECTURE.md' => '.ai/ARCHITECTURE.md',
+        'CONVENTIONS.md' => '.ai/CONVENTIONS.md',
+        'PATTERNS.md' => '.ai/PATTERNS.md',
+    ];
+
+    echo "\n   AI 导航文件:\n";
+    foreach ($aiFiles as $name => $path) {
+        $fullPath = $basePath . '/' . $path;
+        if (file_exists($fullPath)) {
+            $mtime = date('Y-m-d H:i', filemtime($fullPath));
+            $size = filesize($fullPath);
+            echo "   ✅ {$name} ({$size} bytes, 更新于 {$mtime})\n";
+        } else {
+            echo "   ⬜ {$name} (未生成)\n";
+        }
+    }
+
+    // 日志状态
+    $logFile = $basePath . '/storage/logs/app.log';
+    if (file_exists($logFile)) {
+        $logSize = filesize($logFile);
+        $logLines = count(file($logFile));
+        echo "\n   日志: {$logLines} 条记录 (" . round($logSize / 1024, 1) . " KB)\n";
+    }
+}
+
+function runHelp(): void
+{
+    echo <<<HELP
+    🔥 Phosphor CLI - AI 导航工具
+
+    命令:
+      php phosphor map            重新生成 .ai/PROJECT_MAP.md
+      php phosphor changelog      追加变更记录到 .ai/CHANGELOG.md
+      php phosphor status         显示项目状态摘要
+
+    AI 工作流:
+      1. AI 开始工作前运行 `php phosphor map` 了解项目
+      2. AI 修改代码后运行 `php phosphor changelog` 记录变更
+      3. AI 调试时先查看 .ai/ERROR_INDEX.md（自动更新）
+
+    HELP;
+}
+
+function countFiles(string $dir, string $extension): int
+{
+    $count = 0;
+    $entries = scandir($dir);
+    if ($entries === false) {
+        return 0;
+    }
+    foreach ($entries as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        $path = $dir . '/' . $entry;
+        if (is_file($path) && str_ends_with($entry, $extension)) {
+            $count++;
+        } elseif (is_dir($path)) {
+            $count += countFiles($path, $extension);
+        }
+    }
+    return $count;
+}

@@ -90,9 +90,6 @@ class Kernel
 
         // 注册所有应用的路由
         $this->registerApps();
-
-        // 自动生成项目地图
-        $this->generateProjectMap($basePath, $aiDir);
     }
 
     /**
@@ -171,23 +168,6 @@ class Kernel
             foreach ($appDef->controllers as $controllerClass) {
                 $this->router->registerController($controllerClass, $appDef->prefix);
             }
-        }
-    }
-
-    /**
-     * 自动生成项目地图
-     */
-    private function generateProjectMap(string $basePath, string $aiDir): void
-    {
-        try {
-            $mapWriter = new ProjectMapWriter(
-                $aiDir . '/PROJECT_MAP.md',
-                $basePath,
-                $this->router,
-            );
-            $mapWriter->generate();
-        } catch (Throwable) {
-            // 项目地图生成失败不影响主流程
         }
     }
 
